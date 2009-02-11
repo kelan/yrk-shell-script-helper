@@ -74,9 +74,7 @@ end
 class CommandError < Exception
 end
 
-class ArgumentsNotValid < Exception
-end
-
+# For interrupt handling
 class AbortCommand < Interrupt
 end
 class AbortSection < Interrupt
@@ -90,6 +88,7 @@ end
 class YRKShellScript
 
   attr_reader :op, :opts, :arguments, :stdin
+  attr_accessor :exit_status
 
   def initialize
     @arguments = ARGV
@@ -98,6 +97,8 @@ class YRKShellScript
     else
       @stdin = ""
     end
+    
+    @exit_status = 0
     
     # Blocks that clients may provide
     @check_arguments_block = nil
@@ -108,6 +109,10 @@ class YRKShellScript
     # A place to stash default values
     @opts = OpenStruct.new
     
+    # Set these so you can easily use them before the options are parsed
+    @opts.show_echos = @opts.show_headers = true
+    @opts.show_errors = @opts.show_cmd_erros = true
+    
     # Standard options
     @op = OptionParser.new
     @op.summary_indent = "  "
@@ -116,8 +121,6 @@ class YRKShellScript
       "Show this help") do
       output_help
     end
-    
-    @op.separator ""
     
     @op.on('--dry-run',
       "Only show the commands that would be run, don't actually run them") do
@@ -133,8 +136,6 @@ class YRKShellScript
       "Show before, after, and elapsed time") do
        @opts.show_times = true
     end
-    
-    @op.separator ""
     
     @op.on('-c', '--continue-on-error',
       "Stop if any command returns a non-zero exit status") do
@@ -162,7 +163,8 @@ class YRKShellScript
        @opts.verbosity = :silent
     end
     @op.on('-vLEVEL','--verbosity=LEVEL', String,
-      %{Control the level of output.
+      %{Control the level of output.  Use like: -v3 or --verbosity=cmds
+                            Higher levels also show everything below them.
                   Options are:
                     (5) debug:  Show evertying, including start/stop elapsed time
                                 and also show the list of parsed options.
@@ -170,10 +172,7 @@ class YRKShellScript
                     (3) cmds:   Show the commands as they are run, but not their output.
                     (2) echos:  Show #headers and #echos from the script.
                     (1) errors: Only show errors.
-                    (0) silent: Show nothing.
-                  Notes:
-                    * higher levels also show everything below them
-                    * use like: -v3 or --verbosity=cmds}) do |level|
+                    (0) silent: Show nothing.}) do |level|
       if ["debug", "5"].include? level
         @opts.verbosity = :debug
       elsif ["all", "4"].include? level
@@ -218,11 +217,12 @@ class YRKShellScript
   end
   
   # Call this to do argument validation
-  # raise the ArgumentsNotValid exception to signal that there is a problem
+  # raise OptionParser::InvalidArgument or OptionParser::MissingArgument
+  # (with an optional message) if args aren't valid or missing (respectively)
   # You can include an optional error message as a 2nd argument to raise
   # Examples:
   # if script.arguments.length == 0
-  #   raise ArgumentsNotValid, "Some error message"
+  #   raise OptionParser::MissingArgument, "Need at least 1 arg"
   # end
   def check_arguments(&body)
     @check_arguments_block = body
@@ -248,7 +248,6 @@ class YRKShellScript
     
     # Let client scripts add options
     if @add_options_block != nil
-      @op.separator ""
       @op.separator "Custom Options:"
       @add_options_block.call 
     end
@@ -284,34 +283,46 @@ class YRKShellScript
     begin
       parse_options
       @check_arguments_block.call if @check_arguments_block != nil
-    rescue ArgumentsNotValid => e
-      error "\nArguments not valid: #{e.message}\n"
+    rescue OptionParser::InvalidArgument => e
+      error "\nError: #{e.message}\n"
       output_help(:usage, :options)
-    else
-      if @opts.show_debug
-        output_options
-      end
-      
-      if @opts.show_times
-        startTime = Time.now
-        header "Start at #{startTime.to_s}"
-        puts
-      end
-
-      begin
-        body.call
-      rescue AbortScript
-        echo "\n\nUser aborted the script (by pressing CTRL-\\).\n"
-      rescue CommandError => e
-        error "\nScript aborted because this command failed:\n$ #{e.message}\n"
-      end
-
-      if @opts.show_times
-        endTime = Time.now
-        header "Finish at #{endTime.to_s}"
-        header "Ran for #{(endTime - startTime).to_s} seconds"
-      end
+    rescue OptionParser::MissingArgument => e
+      error "\nError: #{e.message}\n"
+      output_help(:usage, :options)
+    rescue => e
+      indent = "  "
+      btString = indent + e.backtrace.join("\n" + indent)
+      error "\nError parsing options/args: #{e.inspect}\nBacktrace:\n#{btString}"
+      exit 0
     end
+    
+    if @opts.show_debug
+      output_options
+    end
+    
+    if @opts.show_times
+      startTime = Time.now
+      header "Start at #{startTime.to_s}"
+      puts
+    end
+    
+    begin
+      body.call
+    rescue AbortScript
+      echo "\n\nUser aborted the script (by pressing CTRL-\\).\n"
+      exit_status = 100
+    rescue CommandError => e
+      error "\nScript aborted because this command failed:\n$ #{e.message}\n"
+      exit_status = 101
+    end
+
+    if @opts.show_times
+      endTime = Time.now
+      header "Finish at #{endTime.to_s}"
+      header "Ran for #{(endTime - startTime).to_s} seconds"
+    end
+    
+    exit @exit_status
   end # run
 
 
@@ -358,24 +369,28 @@ class YRKShellScript
     end
   end # header
 
-  def echo(str="")
-    if @opts.show_echos
+  def echo(str="", params={})
+    newline = "\n"
+    if params[:no_newline]
+      newline = ''
+    end
+    if @opts.show_echos or params[:force]
       if str == nil or str == "" or str == "\n"
-        puts
+        print newline
       else
         str.split(/\n/, -1).each do |line|
           if line == ""
-            puts
+            print newline
           else
-            puts "#{ECHO_COLOR}#{ECHO_PREFIX}#{line}#{NOCOLOR}\n"
+            print "#{ECHO_COLOR}#{ECHO_PREFIX}#{line}#{NOCOLOR}#{newline}"
           end
         end
       end
     end
   end # echo
 
-  def error(str="")
-    if @opts.show_errors
+  def error(str="", params={})
+    if @opts.show_errors or params[:force]
       if str == nil or str == "" or str == "\n"
         puts
       else
@@ -390,8 +405,8 @@ class YRKShellScript
     end
   end # error
 
-  def cd(str="~")
-    if @opts.show_cmd
+  def cd(str="~", params={})
+    if @opts.show_cmd and not params[:silent]
       puts "#{CMD_COLOR}#{CMD_PREFIX}cd #{str}#{NOCOLOR}"
     end
     
@@ -409,7 +424,11 @@ class YRKShellScript
     params[:force] = true unless params.has_key? :force
     
     output, status = cmd(str, params)
-    return output
+    if params[:return_status]
+      return output, status
+    else
+      return output
+    end
   end # def cmd_output
   
   # A convenience method for getting the exit status of a command without
@@ -466,6 +485,10 @@ class YRKShellScript
       show_errors = !params[:ignore_nonzero_exit]
       continue_on_error = params[:ignore_nonzero_exit]
     end
+
+    if params.has_key? :without_asking
+      without_asking = params[:without_asking]
+    end
     
     # TODO: the silent param can only force silence.  I.e. if you say :silent => false, that doesn't do anything.  Is this OK?
     if params[:silent]
@@ -474,7 +497,7 @@ class YRKShellScript
     end
     
     # In interactive mode, ask before each command
-    if (@opts.interactive)
+    if (@opts.interactive and !without_asking)
       response = '?'
       while response == '?'
         response = get_input("Run? #{CYAN}$ #{str}", ["y", "n", "a", "q", "d", "?"])
@@ -634,15 +657,11 @@ class YRKShellScript
   protected
 
   def parse_options
-    begin
-      # parse the options (via OptionParser), and keep the actual args in @arguments
-      @arguments = @op.parse(@arguments)
-    rescue => e
-      error "\nError parsing options: #{e.message}"
-    end
+    # parse the options (via OptionParser), and keep the actual args in @arguments
+    @arguments = @op.parse(@arguments)
     
     # Perform post-parse processing on options
-    
+
     if @opts.dry_run
       @opts.verbosity = :all
     end
@@ -710,3 +729,13 @@ class YRKShellScript
   end
 
 end # class YRKShellScript
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# HELPER STUFF
+
+class String
+  def escapedFilename
+    return self.gsub(/ /, '\ ')
+  end
+end

@@ -23,17 +23,18 @@ require 'yrk-shell-script-helper.rb'
 
 script = YRKShellScript.new
 
-# Define a random method to be called by an option
-def do_something
-  echo "I'm doing something"
+# Define a method to be called by an option
+# NOTE: you have to pass script as an arg if you want to do script.echo or script.cmd, etc.
+def printEs(script)
+  script.echo "EEEEE"
 end
 
 # Add additional options
 script.add_options do
-  script.op.on('-d', "Do something") { do_something } # does this now, before the rest of the options are validated or processed, so be careful
-  script.op.on('-e', "Print EEEEE" ) { echo "EEEEE" } # does this now too
+  # NOTE: The code you run in one of these blocks gets run immediately (before even the option are finished parsing), so be careful.  I usually just set a flag or value in the script.opts OpenStruct, which is used later in the body of the script.  Also note that if you call a method here (such as #printEs) you have to pass script as an arg in order to have access to it there (for doing script.echo or script.cmd, etc.).
+  script.op.on('-d', "Set the doSomething flag") { script.opts.doSomething = true }
+  script.op.on('-e', "Print EEEEE" ) { printEs(script) }
   script.op.on('-a', '--at DATE', Date, "set a date") do |val|
-    # we can add values to the script.opts OpenStruct
     script.opts.date = val
   end
 end
@@ -43,10 +44,12 @@ end
 script.set_options_default_values do
   script.opts.continue_on_error = false
   script.opts.verbosity = :all
+  script.opts.doSomething = false
 end
 
 # Do argument validation
-# raise ArgumentsNotValid (with an optional message) if args aren't valid
+# raise OptionParser::InvalidArgument or OptionParser::MissingArgument
+# (with an optional message) if args aren't valid or missing (respectively)
 script.check_arguments do
   script.echo "Checking if args are valid"
   if script.opts.debug
@@ -57,13 +60,17 @@ script.check_arguments do
   script.opts.show_errors = true
   
   if script.arguments.length == 0
-    raise ArgumentsNotValid, "Need at least 1 argument"
+    raise OptionParser::MissingArgument, "Need at least 1 argument"
   end
 end
 
 
 # Here is the body of the script
 script.run do
+  
+  if script.opts.doSomething
+    script.echo "I'm doing something"
+  end
   
   # check if they passed the date option flag (and value)
   if script.opts.date != nil
@@ -117,7 +124,7 @@ script.run do
   
   # To get the output of a command, use the #cmd_output method
   # This is just a convenience method for calling #cmd with :capture_output => true
-  # Note: Obivously, this won't return until the cmd is finished, but also it won't
+  # NOTE: Obivously, this won't return until the cmd is finished, but also it won't
   # print any output to the console (when you pass :show_cmd_output => true) until
   # the entire command has finished.
   ls = script.cmd_output "ls"
