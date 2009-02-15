@@ -7,17 +7,12 @@ ShellScriptHelper
 
 This is a Ruby class to help write nice shell scripts.
 
-For more information, read the post here: TODO: add post url
-
-
-== SYNOPSYS:
-
-TODO
+For more information, read the post here: http://yeahrightkeller.com/2008/12/11/yrk-shell-script-helper/
 
 
 == LICENSE:
 
-(The BSE License)
+(The BSD License)
 
 Copyright (c) 2008, Kelan Champagne (http://yeahrightkeller.com)
 All rights reserved.
